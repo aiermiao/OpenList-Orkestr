@@ -324,7 +324,7 @@ class HubuClient:
         url = DAV_URL + (dav_path if dav_path.startswith("/") else "/" + dav_path)
         if not url.endswith("/"):
             url += "/"
-        r = requests.request(
+        r = self.s.request(
             "PROPFIND",
             url,
             auth=(self.dav_user, self.dav_pass),

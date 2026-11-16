@@ -205,10 +205,14 @@ def _split(path):
 
 
 class Upstream:
-    def __init__(self, user, password, ttl=20):
+    def __init__(self, user, password, cookie: str = "", ttl=20):
         self.s = _new_session()
         self.s.auth = (user, password)
         self.s.headers["User-Agent"] = UA
+        if cookie:
+            if not cookie.startswith("filehosting="):
+                cookie = "filehosting=" + cookie
+            self.s.headers["Cookie"] = cookie
         self.ttl = ttl
         self._cache = {}
         self._ranges = {}
@@ -885,7 +889,7 @@ def build_app(host, port, local_user, local_pass):
 
     wc = HubuClient(cookie, dav_user, dav_pass)
     idx = Index()
-    up = Upstream(dav_user, dav_pass)
+    up = Upstream(dav_user, dav_pass, cookie=cookie)
     provider = HubuProvider(up, idx, wc)
 
     config = {

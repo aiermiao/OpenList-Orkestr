@@ -9,7 +9,7 @@ RUN apk add --no-cache python3 py3-pip curl && \
 WORKDIR /opt/openlist/
 
 # 避免平台构建缓存旧脚本
-ARG CACHEBUST=20261116_v2
+ARG CACHEBUST=20261116_v3
 
 # 拷贝自定义 Hubu 脚本
 COPY hubu_client.py hubu_dav.py ./

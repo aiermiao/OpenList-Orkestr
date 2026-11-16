@@ -99,8 +99,18 @@ def _new_session() -> requests.Session:
     s.mount("http://", adapter)
     return s
 
+def _clean_env(name: str, default: str = "") -> str:
+    val = os.environ.get(name, default)
+    if val is None:
+        return default
+    val = val.strip()
+    if (val.startswith("'") and val.endswith("'")) or (val.startswith('"') and val.endswith('"')):
+        val = val[1:-1].strip()
+    return val
+
+
 DAV_ROOT = SITE + "/webdav"
-CFG_DIR = Path(os.environ.get("HUBU_CFG_DIR", Path.home() / ".config" / "hubu"))
+CFG_DIR = Path(_clean_env("HUBU_CFG_DIR", str(Path.home() / ".config" / "hubu")))
 DB_PATH = CFG_DIR / "index.db"
 
 
@@ -210,22 +220,31 @@ class Upstream:
         return DAV_ROOT + quote(path, safe="/")
 
     def _propfind(self, path, depth):
-        r = self.s.request(
-            "PROPFIND",
-            self._url(path),
-            headers={"Depth": str(depth), "Content-Type": "text/xml"},
-            data=(
-                '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop>'
-                "<d:resourcetype/><d:getcontentlength/><d:getetag/>"
-                "<d:getlastmodified/><d:getcontenttype/>"
-                "</d:prop></d:propfind>"
-            ),
-            timeout=60,
-        )
+        try:
+            r = self.s.request(
+                "PROPFIND",
+                self._url(path),
+                headers={"Depth": str(depth), "Content-Type": "text/xml"},
+                data=(
+                    '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop>'
+                    "<d:resourcetype/><d:getcontentlength/><d:getetag/>"
+                    "<d:getlastmodified/><d:getcontenttype/>"
+                    "</d:prop></d:propfind>"
+                ),
+                timeout=60,
+            )
+        except Exception as e:
+            err = f"PROPFIND {path} 连接上游失败: {e}"
+            print(f"[Hubu Upstream Error] {err}", file=sys.stderr, flush=True)
+            raise HubuError(err)
+
         if r.status_code == 404:
             return []
         if r.status_code != 207:
-            raise HubuError(f"PROPFIND {path} 失败：HTTP {r.status_code} {r.text[:200]}")
+            preview = r.text[:300].replace("\n", " ").strip()
+            err = f"PROPFIND {path} 失败：HTTP {r.status_code} ({preview})"
+            print(f"[Hubu Upstream Error] {err}", file=sys.stderr, flush=True)
+            raise HubuError(err)
         return _parse_multistatus(r.content, path)
 
     def listdir(self, path):
@@ -848,13 +867,21 @@ def _delete_by_hash(path, rec):
 # 启动
 # --------------------------------------------------------------------------
 def build_app(host, port, local_user, local_pass):
-    cookie = os.environ.get("HUBU_COOKIE", "").strip()
-    dav_user = os.environ.get("HUBU_DAV_USER", "").strip()
-    dav_pass = os.environ.get("HUBU_DAV_PASS", "").strip()
+    cookie = _clean_env("HUBU_COOKIE")
+    dav_user = _clean_env("HUBU_DAV_USER")
+    dav_pass = _clean_env("HUBU_DAV_PASS")
+    local_user = local_user.strip().strip("'\"")
+    local_pass = local_pass.strip().strip("'\"")
     if not cookie:
         sys.exit("请先 export HUBU_COOKIE='filehosting=...'")
     if not (dav_user and dav_pass):
         sys.exit("请先 export HUBU_DAV_USER / HUBU_DAV_PASS（上游 WebDAV 账号）")
+
+    print(
+        f"[Hubu Init] 上游账号: {dav_user}, 密码长度: {len(dav_pass)}, "
+        f"Cookie长度: {len(cookie)}, 本地用户: {local_user}",
+        flush=True,
+    )
 
     wc = HubuClient(cookie, dav_user, dav_pass)
     idx = Index()
@@ -884,15 +911,15 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("serve", help="启动网关")
-    s.add_argument("--host", default=os.environ.get("HUBU_HOST", "0.0.0.0"))
-    s.add_argument("--port", type=int, default=int(os.environ.get("HUBU_PORT", "8080")))
+    s.add_argument("--host", default=_clean_env("HUBU_HOST", "0.0.0.0"))
+    s.add_argument("--port", type=int, default=int(_clean_env("HUBU_PORT", "8080")))
     s.add_argument(
-        "--user", default=os.environ.get("HUBU_LOCAL_USER", os.environ.get("HUBU_DAV_USER", "hubu"))
+        "--user", default=_clean_env("HUBU_LOCAL_USER", _clean_env("HUBU_DAV_USER", "hubu"))
     )
     s.add_argument(
         "--pass",
         dest="password",
-        default=os.environ.get("HUBU_LOCAL_PASS", os.environ.get("HUBU_DAV_PASS", "")),
+        default=_clean_env("HUBU_LOCAL_PASS", _clean_env("HUBU_DAV_PASS", "")),
     )
 
     m = sub.add_parser("map", help="注册目录 id")

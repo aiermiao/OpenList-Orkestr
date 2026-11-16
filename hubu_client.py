@@ -64,7 +64,10 @@ class HubuError(RuntimeError):
 
 class HubuClient:
     def __init__(self, cookie: str, dav_user: str = "", dav_pass: str = ""):
-        self.cookie = cookie.strip()
+        cookie = (cookie or "").strip().strip("'\"")
+        dav_user = (dav_user or "").strip().strip("'\"")
+        dav_pass = (dav_pass or "").strip().strip("'\"")
+        self.cookie = cookie
         if not self.cookie.startswith("filehosting="):
             self.cookie = "filehosting=" + self.cookie
         self.session_id = self.cookie.split("=", 1)[1].split(";")[0]

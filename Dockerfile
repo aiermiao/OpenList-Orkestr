@@ -1,40 +1,25 @@
-### Default image is base. You can add other support by modifying BASE_IMAGE_TAG. The following parameters are supported: base (default), aria2, ffmpeg, aio
-ARG BASE_IMAGE_TAG=base
+FROM openlistteam/openlist:latest
 
-FROM alpine:edge AS builder
-LABEL stage=go-builder
-WORKDIR /app/
-RUN apk add --no-cache bash curl jq gcc git go musl-dev
-COPY go.mod go.sum ./
-RUN go mod download
-COPY ./ ./
-RUN bash build.sh release docker
+USER root
 
-FROM openlistteam/openlist-base-image:${BASE_IMAGE_TAG}
-LABEL MAINTAINER="OpenList"
-ARG INSTALL_FFMPEG=false
-ARG INSTALL_ARIA2=false
-ARG USER=openlist
-ARG UID=1001
-ARG GID=1001
+# 安装 Python3、pip 与网络工具 curl
+RUN apk add --no-cache python3 py3-pip curl && \
+    pip install --no-cache-dir --break-system-packages requests wsgidav cheroot
 
 WORKDIR /opt/openlist/
 
-RUN addgroup -g ${GID} ${USER} && \
-    adduser -D -u ${UID} -G ${USER} ${USER} && \
-    mkdir -p /opt/openlist/data
+# 拷贝自定义 Hubu 脚本
+COPY hubu_client.py hubu_dav.py ./
+RUN chmod +x hubu_client.py hubu_dav.py && \
+    ln -sf /opt/openlist/hubu_client.py /usr/local/bin/hubu-client && \
+    ln -sf /opt/openlist/hubu_dav.py /usr/local/bin/hubu-dav
 
-COPY --from=builder --chmod=755 --chown=${UID}:${GID} /app/bin/openlist ./
-COPY --chmod=755 --chown=${UID}:${GID} entrypoint.sh /entrypoint.sh
+# 拷贝并设置启动脚本
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-# Do NOT switch to USER ${USER}. orkestr drops CAP_CHOWN/CAP_SETUID/CAP_SETGID,
-# so privilege drop via su-exec is impossible. Run as root.
-# 不要切换到 USER ${USER}。orkestr 丢弃了相关 capability，无法降权，以 root 运行。
-# USER ${USER}
-
-RUN /entrypoint.sh version
-
-ENV UMASK=022 RUN_ARIA2=${INSTALL_ARIA2}
+ENV UMASK=022
 VOLUME /opt/openlist/data/
-EXPOSE 5244 5245
-CMD [ "/entrypoint.sh" ]
+EXPOSE 5244 5245 8080
+
+ENTRYPOINT [ "/entrypoint.sh" ]

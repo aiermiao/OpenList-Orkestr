@@ -44,11 +44,11 @@ EOF
   # Start Hubu WebDAV Gateway if configured
   # 若配置了 HUBU 环境变量，自动在后台启动 WebDAV 网关服务
   if [ -n "$HUBU_COOKIE" ] && [ -n "$HUBU_DAV_USER" ] && [ -n "$HUBU_DAV_PASS" ]; then
-    echo "[Hubu] Starting Hubu WebDAV Gateway on ${HUBU_HOST:-127.0.0.1}:${HUBU_PORT:-8080}..."
+    echo "[Hubu] Starting Hubu WebDAV Gateway on ${HUBU_HOST:-0.0.0.0}:${HUBU_PORT:-8080}..."
     export HUBU_CFG_DIR="${HUBU_CFG_DIR:-/opt/openlist/data/hubu}"
     mkdir -p "$HUBU_CFG_DIR"
     python3 /opt/openlist/hubu_dav.py serve \
-      --host "${HUBU_HOST:-127.0.0.1}" \
+      --host "${HUBU_HOST:-0.0.0.0}" \
       --port "${HUBU_PORT:-8080}" \
       --user "${HUBU_LOCAL_USER:-$HUBU_DAV_USER}" \
       --pass "${HUBU_LOCAL_PASS:-$HUBU_DAV_PASS}" 2>&1 | tee -a "${HUBU_CFG_DIR}/hubu_dav.log" &

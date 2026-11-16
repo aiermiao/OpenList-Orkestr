@@ -884,7 +884,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("serve", help="启动网关")
-    s.add_argument("--host", default=os.environ.get("HUBU_HOST", "127.0.0.1"))
+    s.add_argument("--host", default=os.environ.get("HUBU_HOST", "0.0.0.0"))
     s.add_argument("--port", type=int, default=int(os.environ.get("HUBU_PORT", "8080")))
     s.add_argument(
         "--user", default=os.environ.get("HUBU_LOCAL_USER", os.environ.get("HUBU_DAV_USER", "hubu"))

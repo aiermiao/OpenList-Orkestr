@@ -25,20 +25,68 @@ EOF
     fi
   fi
 
-  # Define the target directory path for aria2 service
-  ARIA2_DIR="/opt/service/start/aria2"
-  if [ "$RUN_ARIA2" = "true" ]; then
-    # If aria2 should run and target directory doesn't exist, copy it
-    if [ ! -d "$ARIA2_DIR" ]; then
-      mkdir -p "$ARIA2_DIR"
-      cp -r /opt/service/stop/aria2/* "$ARIA2_DIR" 2>/dev/null
+  # Start Aria2 Pro daemon if enabled (default: true)
+  # 启动内置的 Aria2 Pro 守护进程（默认启用，支持 BT / 磁力链接离线下载）
+  if [ "${ENABLE_ARIA2:-true}" != "false" ]; then
+    echo "[Aria2] Starting Aria2 Pro daemon on 0.0.0.0:${ARIA2_PORT:-6800}..."
+    ARIA2_DATA_DIR="${ARIA2_DATA_DIR:-/opt/openlist/data/aria2}"
+    ARIA2_TEMP_DIR="${ARIA2_TEMP_DIR:-/opt/openlist/data/temp}"
+    mkdir -p "$ARIA2_DATA_DIR" "$ARIA2_TEMP_DIR"
+    touch "$ARIA2_DATA_DIR/aria2.session"
+
+    # 获取最新优质 BT Trackers（Aria2 Pro 核心加速机制）
+    TRACKERS=$(curl -sSL --connect-timeout 4 -m 8 "https://trackerslist.com/best_aria2.txt" 2>/dev/null)
+    if [ -z "$TRACKERS" ]; then
+      TRACKERS=$(curl -sSL --connect-timeout 4 -m 8 "https://cdn.jsdelivr.net/gh/ngosang/trackerslist/trackers_best.txt" 2>/dev/null | awk 'NF {if (NR>1) printf ","; printf "%s", $0}')
     fi
-    runsvdir /opt/service/start &
-  else
-    # If aria2 should NOT run and target directory exists, remove it
-    if [ -d "$ARIA2_DIR" ]; then
-      rm -rf "$ARIA2_DIR"
+    if [ -z "$TRACKERS" ]; then
+      TRACKERS="udp://tracker.opentrackr.org:1337/announce,udp://open.tracker.cl:1337/announce,udp://tracker.openbittorrent.com:80/announce,udp://opentracker.i2p.rocks:6969/announce,udp://open.demonii.com:1337/announce,udp://exodus.desync.com:6969/announce"
     fi
+
+    # 生成 Aria2 Pro 优化配置文件
+    cat > "$ARIA2_DATA_DIR/aria2.conf" <<EOF
+## RPC 设置 ##
+enable-rpc=true
+rpc-listen-all=true
+rpc-listen-port=${ARIA2_PORT:-6800}
+rpc-allow-origin-all=true
+${ARIA2_SECRET:+rpc-secret=$ARIA2_SECRET}
+
+## 存储与会话 ##
+dir=$ARIA2_TEMP_DIR
+input-file=$ARIA2_DATA_DIR/aria2.session
+save-session=$ARIA2_DATA_DIR/aria2.session
+save-session-interval=30
+file-allocation=none
+disk-cache=16M
+
+## 下载线程与连接数 ##
+max-concurrent-downloads=5
+max-connection-per-server=16
+min-split-size=4M
+split=16
+
+## BT / 磁力链接优化 (Aria2 Pro) ##
+enable-dht=true
+enable-dht6=true
+dht-listen-port=6881-6999
+dht-file-path=$ARIA2_DATA_DIR/dht.dat
+dht-file-path6=$ARIA2_DATA_DIR/dht6.dat
+enable-peer-exchange=true
+bt-enable-lpd=true
+bt-max-peers=60
+bt-save-metadata=true
+follow-torrent=mem
+check-integrity=true
+seed-time=0
+seed-ratio=0.1
+peer-id-prefix=-TR2770-
+user-agent=Transmission/2.77
+bt-tracker=$TRACKERS
+EOF
+
+    aria2c --conf-path="$ARIA2_DATA_DIR/aria2.conf" -D --log="$ARIA2_DATA_DIR/aria2.log" --log-level=warn
+    echo "[Aria2] Aria2 Pro daemon started on port ${ARIA2_PORT:-6800}."
   fi
 
   # Start Hubu WebDAV Gateway if configured

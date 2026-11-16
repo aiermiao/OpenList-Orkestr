@@ -2,14 +2,14 @@ FROM openlistteam/openlist:latest
 
 USER root
 
-# 安装 Python3、pip 与网络工具 curl
-RUN apk add --no-cache python3 py3-pip curl && \
+# 安装 Python3、pip、curl 与 aria2
+RUN apk add --no-cache python3 py3-pip curl aria2 && \
     pip install --no-cache-dir --break-system-packages requests wsgidav cheroot
 
 WORKDIR /opt/openlist/
 
 # 避免平台构建缓存旧脚本
-ARG CACHEBUST=20261116_v3
+ARG CACHEBUST=20261116_v4
 
 # 拷贝自定义 Hubu 脚本
 COPY hubu_client.py hubu_dav.py ./
@@ -22,7 +22,8 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENV UMASK=022
+ENV ENABLE_ARIA2=true RUN_ARIA2=true
 VOLUME /opt/openlist/data/
-EXPOSE 5244 5245 8080
+EXPOSE 5244 5245 8080 6800
 
 ENTRYPOINT [ "/entrypoint.sh" ]

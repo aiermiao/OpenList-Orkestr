@@ -35,6 +35,12 @@ EOF
     mkdir -p "$ARIA2_DATA_DIR" "$ARIA2_TEMP_DIR"
     touch "$ARIA2_DATA_DIR/aria2.session"
 
+    # 清理历史未完成的残留临时下载，防止磁盘被历史大文件撑爆超限 (Disk over the limit)
+    if [ "${CLEAN_TEMP_ON_START:-true}" = "true" ]; then
+      echo "[Cleanup] Cleaning up stale temporary files in $ARIA2_TEMP_DIR..."
+      rm -rf "$ARIA2_TEMP_DIR"/* 2>/dev/null || true
+    fi
+
     # 内置高质量 BT Trackers，秒级启动不阻塞应用
     DEFAULT_TRACKERS="udp://tracker.opentrackr.org:1337/announce,udp://open.tracker.cl:1337/announce,udp://tracker.openbittorrent.com:80/announce,udp://opentracker.i2p.rocks:6969/announce,udp://open.demonii.com:1337/announce,udp://exodus.desync.com:6969/announce,udp://tracker.torrent.eu.org:451/announce,udp://explodie.org:6969/announce,udp://open.stealth.si:80/announce,udp://tracker.tiny-vps.com:6969/announce"
 

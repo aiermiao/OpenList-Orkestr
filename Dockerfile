@@ -2,14 +2,15 @@ FROM openlistteam/openlist:latest
 
 USER root
 
-# 安装 Python3、pip、curl 与 aria2
+# 安装 Python3、pip、curl 与 aria2 并清理包缓存
 RUN apk add --no-cache python3 py3-pip curl aria2 && \
-    pip install --no-cache-dir --break-system-packages requests wsgidav cheroot
+    pip install --no-cache-dir --break-system-packages requests wsgidav cheroot && \
+    rm -rf /var/cache/apk/* /tmp/* /root/.cache
 
 WORKDIR /opt/openlist/
 
 # 避免平台构建缓存旧脚本
-ARG CACHEBUST=20261116_v5
+ARG CACHEBUST=20261116_v6
 
 # 拷贝自定义 Hubu 脚本
 COPY hubu_client.py hubu_dav.py ./

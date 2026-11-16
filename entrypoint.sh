@@ -27,27 +27,22 @@ EOF
 
   # Start Aria2 Pro daemon if enabled (default: true)
   # 启动内置的 Aria2 Pro 守护进程（默认启用，支持 BT / 磁力链接离线下载）
+  # 注意：必须仅监听 127.0.0.1，避免被 Orkestr 端口扫描误识别为主服务端口
   if [ "${ENABLE_ARIA2:-true}" != "false" ]; then
-    echo "[Aria2] Starting Aria2 Pro daemon on 0.0.0.0:${ARIA2_PORT:-6800}..."
+    echo "[Aria2] Starting Aria2 Pro daemon on 127.0.0.1:${ARIA2_PORT:-6800}..."
     ARIA2_DATA_DIR="${ARIA2_DATA_DIR:-/opt/openlist/data/aria2}"
     ARIA2_TEMP_DIR="${ARIA2_TEMP_DIR:-/opt/openlist/data/temp}"
     mkdir -p "$ARIA2_DATA_DIR" "$ARIA2_TEMP_DIR"
     touch "$ARIA2_DATA_DIR/aria2.session"
 
-    # 获取最新优质 BT Trackers（Aria2 Pro 核心加速机制）
-    TRACKERS=$(curl -sSL --connect-timeout 4 -m 8 "https://trackerslist.com/best_aria2.txt" 2>/dev/null)
-    if [ -z "$TRACKERS" ]; then
-      TRACKERS=$(curl -sSL --connect-timeout 4 -m 8 "https://cdn.jsdelivr.net/gh/ngosang/trackerslist/trackers_best.txt" 2>/dev/null | awk 'NF {if (NR>1) printf ","; printf "%s", $0}')
-    fi
-    if [ -z "$TRACKERS" ]; then
-      TRACKERS="udp://tracker.opentrackr.org:1337/announce,udp://open.tracker.cl:1337/announce,udp://tracker.openbittorrent.com:80/announce,udp://opentracker.i2p.rocks:6969/announce,udp://open.demonii.com:1337/announce,udp://exodus.desync.com:6969/announce"
-    fi
+    # 内置高质量 BT Trackers，秒级启动不阻塞应用
+    DEFAULT_TRACKERS="udp://tracker.opentrackr.org:1337/announce,udp://open.tracker.cl:1337/announce,udp://tracker.openbittorrent.com:80/announce,udp://opentracker.i2p.rocks:6969/announce,udp://open.demonii.com:1337/announce,udp://exodus.desync.com:6969/announce,udp://tracker.torrent.eu.org:451/announce,udp://explodie.org:6969/announce,udp://open.stealth.si:80/announce,udp://tracker.tiny-vps.com:6969/announce"
 
     # 生成 Aria2 Pro 优化配置文件
     cat > "$ARIA2_DATA_DIR/aria2.conf" <<EOF
-## RPC 设置 ##
+## RPC 设置 (仅监听本地回环 127.0.0.1) ##
 enable-rpc=true
-rpc-listen-all=true
+rpc-listen-all=false
 rpc-listen-port=${ARIA2_PORT:-6800}
 rpc-allow-origin-all=true
 ${ARIA2_SECRET:+rpc-secret=$ARIA2_SECRET}
@@ -82,21 +77,29 @@ seed-time=0
 seed-ratio=0.1
 peer-id-prefix=-TR2770-
 user-agent=Transmission/2.77
-bt-tracker=$TRACKERS
+bt-tracker=$DEFAULT_TRACKERS
 EOF
 
     aria2c --conf-path="$ARIA2_DATA_DIR/aria2.conf" -D --log="$ARIA2_DATA_DIR/aria2.log" --log-level=warn
-    echo "[Aria2] Aria2 Pro daemon started on port ${ARIA2_PORT:-6800}."
+    echo "[Aria2] Aria2 Pro daemon started on 127.0.0.1:${ARIA2_PORT:-6800}."
+
+    # 后台异步拉取全量最新 Tracker 列表并热更新，绝不阻塞应用启动
+    (
+      NEW_TRACKERS=$(curl -sSL --connect-timeout 4 -m 10 "https://trackerslist.com/best_aria2.txt" 2>/dev/null)
+      if [ -n "$NEW_TRACKERS" ]; then
+        sed -i "s|^bt-tracker=.*|bt-tracker=$NEW_TRACKERS|" "$ARIA2_DATA_DIR/aria2.conf"
+      fi
+    ) &
   fi
 
   # Start Hubu WebDAV Gateway if configured
-  # 若配置了 HUBU 环境变量，自动在后台启动 WebDAV 网关服务
+  # 若配置了 HUBU 环境变量，自动在后台启动 WebDAV 网关服务（仅监听 127.0.0.1）
   if [ -n "$HUBU_COOKIE" ] && [ -n "$HUBU_DAV_USER" ] && [ -n "$HUBU_DAV_PASS" ]; then
-    echo "[Hubu] Starting Hubu WebDAV Gateway on ${HUBU_HOST:-0.0.0.0}:${HUBU_PORT:-8080}..."
+    echo "[Hubu] Starting Hubu WebDAV Gateway on ${HUBU_HOST:-127.0.0.1}:${HUBU_PORT:-8080}..."
     export HUBU_CFG_DIR="${HUBU_CFG_DIR:-/opt/openlist/data/hubu}"
     mkdir -p "$HUBU_CFG_DIR"
     python3 /opt/openlist/hubu_dav.py serve \
-      --host "${HUBU_HOST:-0.0.0.0}" \
+      --host "${HUBU_HOST:-127.0.0.1}" \
       --port "${HUBU_PORT:-8080}" \
       --user "${HUBU_LOCAL_USER:-$HUBU_DAV_USER}" \
       --pass "${HUBU_LOCAL_PASS:-$HUBU_DAV_PASS}" 2>&1 | tee -a "${HUBU_CFG_DIR}/hubu_dav.log" &

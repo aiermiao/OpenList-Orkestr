@@ -10,7 +10,7 @@ RUN apk add --no-cache python3 py3-pip curl aria2 && \
 WORKDIR /opt/openlist/
 
 # 避免平台构建缓存旧脚本
-ARG CACHEBUST=20261119_v1
+ARG CACHEBUST=20261119_v2
 
 # 拷贝自定义 Hubu 脚本
 COPY hubu_client.py hubu_dav.py ./
@@ -23,7 +23,7 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENV UMASK=022
-ENV ENABLE_ARIA2=true RUN_ARIA2=true PORT=5244
+ENV ENABLE_ARIA2=true RUN_ARIA2=true PORT=5244 PYTHONUNBUFFERED=1
 VOLUME /opt/openlist/data/
 EXPOSE 5244
 

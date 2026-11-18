@@ -358,12 +358,80 @@ def _parse_multistatus(body, base_path):
     return out
 
 
+class GlobalBlockCache:
+    """全局跨请求的 Range 块缓存（LRU）。
+
+    浏览器与流媒体播放器（如 Firefox / VLC）在串流时会发起数百次独立的 HTTP Range 请求
+    （每次通常仅读 512KB ~ 1MB）。如果每次请求都创建独立的缓冲区，会导致未读完的
+    预拉取数据被频繁销毁、上游频繁被轰炸。
+    本缓存跨请求常驻内存，保证 4MB 块只向上游拉取一次，后续请求 0ms 内存级直接命中。
+    """
+
+    def __init__(self, block_size: int = 4 * 1024 * 1024, max_blocks: int = 12):
+        self.block_size = block_size
+        self.max_blocks = max_blocks
+        self._cache = {}
+        self._order = []
+        self._lock = threading.Lock()
+        self._fetching = {}  # (url, block_idx) -> threading.Event
+
+    def get(self, url: str, block_idx: int) -> bytes | None:
+        with self._lock:
+            key = (url, block_idx)
+            if key in self._cache:
+                self._order.remove(key)
+                self._order.append(key)
+                return self._cache[key]
+            return None
+
+    def start_fetch(self, url: str, block_idx: int) -> bool:
+        """返回 True 表示当前线程获得拉取权；返回 False 表示已有其他线程在拉取，需等待。"""
+        with self._lock:
+            key = (url, block_idx)
+            if key in self._cache:
+                return False
+            if key in self._fetching:
+                return False
+            evt = threading.Event()
+            self._fetching[key] = evt
+            return True
+
+    def wait_fetch(self, url: str, block_idx: int, timeout: float = 60.0) -> bytes | None:
+        with self._lock:
+            key = (url, block_idx)
+            evt = self._fetching.get(key)
+        if evt:
+            evt.wait(timeout)
+        return self.get(url, block_idx)
+
+    def finish_fetch(self, url: str, block_idx: int, data: bytes | None):
+        with self._lock:
+            key = (url, block_idx)
+            if data is not None:
+                if key in self._cache:
+                    self._order.remove(key)
+                elif len(self._cache) >= self.max_blocks:
+                    oldest = self._order.pop(0)
+                    self._cache.pop(oldest, None)
+                self._cache[key] = data
+                self._order.append(key)
+            evt = self._fetching.pop(key, None)
+            if evt:
+                evt.set()
+
+
+_GLOBAL_BLOCK_CACHE = GlobalBlockCache(
+    block_size=int(_clean_env("HUBU_BLOCK_SIZE", str(4 * 1024 * 1024))),
+    max_blocks=int(_clean_env("HUBU_CACHE_BLOCKS", "12")),  # 12 * 4MB = 48MB RAM
+)
+
+
 class HttpRangeFile:
     """用 HTTP Range 请求实现的只读文件对象，支持 seek（视频拖动进度条）。"""
 
     def __init__(self, session, url, size, block=None, ranged=True):
         if block is None:
-            block = int(_clean_env("HUBU_BLOCK_SIZE", str(4 * 1024 * 1024)))
+            block = _GLOBAL_BLOCK_CACHE.block_size
         # 每个文件单独一个会话：避免多线程共用一个连接池时被上游
         # 掐断连接后互相拖累，也方便失败时整体重建连接。
         self._auth = getattr(session, "auth", None)
@@ -376,8 +444,6 @@ class HttpRangeFile:
         self.block = block
         self.ranged = ranged
         self.pos = 0
-        self._buf = b""
-        self._buf_off = 0
         self._resp = None
 
     def _reopen(self):
@@ -450,6 +516,32 @@ class HttpRangeFile:
         print(f"[Hubu Stream Error] bytes {start}-{end} 最终失败: {last}", file=sys.stderr, flush=True)
         raise IOError(f"读取失败：{last}")
 
+    def _load_block(self, b: int) -> bytes:
+        data = _GLOBAL_BLOCK_CACHE.get(self.url, b)
+        if data is not None:
+            return data
+
+        if not _GLOBAL_BLOCK_CACHE.start_fetch(self.url, b):
+            data = _GLOBAL_BLOCK_CACHE.wait_fetch(self.url, b)
+            if data is not None:
+                return data
+
+        b_size = _GLOBAL_BLOCK_CACHE.block_size
+        b_start = b * b_size
+        b_end = min((b + 1) * b_size, self.size) - 1
+        try:
+            r = self._get_range(b_start, b_end)
+            data = r.content
+            try:
+                r.close()
+            except Exception:
+                pass
+            _GLOBAL_BLOCK_CACHE.finish_fetch(self.url, b, data)
+            return data
+        except Exception:
+            _GLOBAL_BLOCK_CACHE.finish_fetch(self.url, b, None)
+            raise
+
     def read(self, n=-1):
         if not self.ranged:
             self._ensure_stream()
@@ -467,37 +559,41 @@ class HttpRangeFile:
                 )
             self.pos += len(data or b"")
             return data
+
         if n is None or n < 0:
             n = self.size - self.pos
         n = min(n, self.size - self.pos)
         if n <= 0:
             return b""
-        start = self.pos - self._buf_off
-        if self._buf and 0 <= start < len(self._buf):
-            # 缓冲区中仍有有效数据，直接从内存切片返回，不发额外网络请求
-            data = self._buf[start : start + n]
-            self.pos += len(data)
-            return data
 
-        # 缓冲区耗尽或发生跳转，拉取大块（默认 4MB）数据填入缓冲区
-        end = min(self.pos + max(n, self.block), self.size) - 1
-        r = self._get_range(self.pos, end)
-        self._buf = r.content
-        try:
-            r.close()
-        except Exception:
-            pass
-        self._buf_off = self.pos if r.status_code == 206 else 0
-        start = self.pos - self._buf_off
-        data = self._buf[start : start + n]
-        self.pos += len(data)
-        return data
+        req_start = self.pos
+        req_end = req_start + n
+        b_size = _GLOBAL_BLOCK_CACHE.block_size
+        first_b = req_start // b_size
+        last_b = (req_end - 1) // b_size
+
+        parts = []
+        for b in range(first_b, last_b + 1):
+            data = self._load_block(b)
+            b_start = b * b_size
+            b_end = b_start + len(data)
+            slice_start = max(req_start, b_start) - b_start
+            slice_end = min(req_end, b_end) - b_start
+            if slice_end > slice_start:
+                parts.append(data[slice_start:slice_end])
+
+        res = b"".join(parts)
+        self.pos += len(res)
+        return res
 
     def close(self):
-        self._buf = b""
         if self._resp is not None:
             self._resp.close()
             self._resp = None
+        try:
+            self.session.close()
+        except Exception:
+            pass
         try:
             self.session.close()
         except Exception:

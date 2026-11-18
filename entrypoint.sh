@@ -104,7 +104,7 @@ EOF
     echo "[Hubu] Starting Hubu WebDAV Gateway on ${HUBU_HOST:-127.0.0.1}:${HUBU_PORT:-8080}..."
     export HUBU_CFG_DIR="${HUBU_CFG_DIR:-/opt/openlist/data/hubu}"
     mkdir -p "$HUBU_CFG_DIR"
-    python3 /opt/openlist/hubu_dav.py serve \
+    python3 -u /opt/openlist/hubu_dav.py serve \
       --host "${HUBU_HOST:-127.0.0.1}" \
       --port "${HUBU_PORT:-8080}" \
       --user "${HUBU_LOCAL_USER:-$HUBU_DAV_USER}" \

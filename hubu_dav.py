@@ -314,8 +314,10 @@ class Upstream:
             self._ranges[path] = (ok, now)
         return ok
 
-    def open_range(self, path, size, ranged=True):
-        return HttpRangeFile(self.s, self._url(path), size, ranged=ranged)
+    def open_range(self, path, size, ranged=True, block=None):
+        if block is None:
+            block = int(_clean_env("HUBU_BLOCK_SIZE", str(4 * 1024 * 1024)))
+        return HttpRangeFile(self.s, self._url(path), size, block=block, ranged=ranged)
 
 
 def _parse_multistatus(body, base_path):
@@ -359,7 +361,9 @@ def _parse_multistatus(body, base_path):
 class HttpRangeFile:
     """用 HTTP Range 请求实现的只读文件对象，支持 seek（视频拖动进度条）。"""
 
-    def __init__(self, session, url, size, block=256 * 1024, ranged=True):
+    def __init__(self, session, url, size, block=None, ranged=True):
+        if block is None:
+            block = int(_clean_env("HUBU_BLOCK_SIZE", str(4 * 1024 * 1024)))
         # 每个文件单独一个会话：避免多线程共用一个连接池时被上游
         # 掐断连接后互相拖累，也方便失败时整体重建连接。
         self._auth = getattr(session, "auth", None)
@@ -401,7 +405,7 @@ class HttpRangeFile:
     def _ensure_stream(self):
         if self._resp is None:
             last = None
-            for attempt in range(4):
+            for attempt in range(5):
                 try:
                     r = self.session.get(
                         self.url,
@@ -414,13 +418,14 @@ class HttpRangeFile:
                     return
                 except Exception as e:
                     last = e
+                    print(f"[Hubu Stream Warning] 确保流式连接重试 ({attempt+1}/5): {e}", file=sys.stderr, flush=True)
                     self._reopen()
-                    time.sleep(0.4 * (attempt + 1))
+                    time.sleep(0.5 * (attempt + 1))
             raise IOError(f"读取失败：{last}")
 
     def _get_range(self, start, end):
         last = None
-        for attempt in range(4):
+        for attempt in range(5):
             try:
                 r = self.session.get(
                     self.url,
@@ -433,10 +438,16 @@ class HttpRangeFile:
                 if r.status_code in (200, 206):
                     return r
                 last = IOError(f"读取失败：HTTP {r.status_code}")
+                try:
+                    r.close()
+                except Exception:
+                    pass
             except Exception as e:
                 last = e
+            print(f"[Hubu Stream Warning] bytes {start}-{end} 重试 ({attempt+1}/5): {last}", file=sys.stderr, flush=True)
             self._reopen()
-            time.sleep(0.4 * (attempt + 1))
+            time.sleep(0.5 * (attempt + 1))
+        print(f"[Hubu Stream Error] bytes {start}-{end} 最终失败: {last}", file=sys.stderr, flush=True)
         raise IOError(f"读取失败：{last}")
 
     def read(self, n=-1):
@@ -462,15 +473,23 @@ class HttpRangeFile:
         if n <= 0:
             return b""
         start = self.pos - self._buf_off
-        if self._buf and 0 <= start and start + n <= len(self._buf):
+        if self._buf and 0 <= start < len(self._buf):
+            # 缓冲区中仍有有效数据，直接从内存切片返回，不发额外网络请求
             data = self._buf[start : start + n]
-        else:
-            end = min(self.pos + max(n, self.block), self.size) - 1
-            r = self._get_range(self.pos, end)
-            self._buf = r.content
-            self._buf_off = self.pos if r.status_code == 206 else 0
-            start = self.pos - self._buf_off
-            data = self._buf[start : start + n]
+            self.pos += len(data)
+            return data
+
+        # 缓冲区耗尽或发生跳转，拉取大块（默认 4MB）数据填入缓冲区
+        end = min(self.pos + max(n, self.block), self.size) - 1
+        r = self._get_range(self.pos, end)
+        self._buf = r.content
+        try:
+            r.close()
+        except Exception:
+            pass
+        self._buf_off = self.pos if r.status_code == 206 else 0
+        start = self.pos - self._buf_off
+        data = self._buf[start : start + n]
         self.pos += len(data)
         return data
 
@@ -725,14 +744,16 @@ class HubuFile(DAVNonCollection):
     def get_content(self):
         if not self.exists:
             return HttpRangeFile(self.provider.up.s, "", 0)
+        block = int(_clean_env("HUBU_BLOCK_SIZE", str(4 * 1024 * 1024)))
         url = self.provider.read_url(self.path)
         if url:
             return HttpRangeFile(
-                self.provider.wc.s, url, self.get_content_length(), ranged=True
+                self.provider.wc.s, url, self.get_content_length(), block=block, ranged=True
             )
         return self.provider.up.open_range(
             self.path,
             self.get_content_length(),
+            block=block,
             ranged=self.provider.up.supports_ranges(self.path),
         )
 
